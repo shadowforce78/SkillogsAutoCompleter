@@ -65,7 +65,23 @@ def parse_skillogs_json(file_path):
             for inner in inner_flexible_quiz:
                 inner_key = inner.get("key")
                 inner_layout = inner.get("layout")
-                inner_contents.append({"key": inner_key, "layout": inner_layout})
+                
+                # Extraction des réponses possibles si disponibles
+                inner_attributes = inner.get("attributes", {})
+                possible_answers = []
+                
+                # Cas multiple_choice / fill_in_the_blank
+                if "answers" in inner_attributes:
+                    possible_answers = [a.get("key") for a in inner_attributes["answers"] if a.get("key")]
+                
+                # Cas matching_question (souvent 'answers' et 'choices')
+                # Pour matching, la structure de réponse est plus complexe, mais on récupère les clés quand même
+                
+                inner_contents.append({
+                    "key": inner_key, 
+                    "layout": inner_layout,
+                    "answers": possible_answers
+                })
             
             # Empêcher l'envoi de listes vides, qui provoquent des erreurs 422
             if not inner_contents:

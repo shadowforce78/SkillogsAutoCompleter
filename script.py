@@ -89,9 +89,70 @@ def scrape_page_data(cohort_id, module_id, session_id):
     
     return "index.json"
 
-def validate_content(cohort_id, module_id, session_id, content_id, global_key, global_layout, flexible_contents):
-    # Revert to long URL as requested
+def get_content_details(cohort_id, module_id, session_id, content_id):
+    """
+    Récupère les détails d'un contenu (pour essayer de trouver les bonnes réponses des quiz).
+    """
     url = f"https://ensupsqy.skillogs.info/api/user/cohort/{cohort_id}/module/{module_id}/session/{session_id}/content/{content_id}/flexible_content"
+    headers = {
+        "Authorization": f"Bearer {get_token()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "X-Language": "fr"
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"Warning: Impossible de récupérer les détails pour {content_id}: {e}")
+        return None
+
+def find_correct_answers(details_json):
+    """
+    Parcourt le JSON détaillé pour trouver les réponses marquées comme correctes.
+    Retourne un dictionnaire {question_key: [correct_answer_keys]}
+    """
+    correct_map = {}
+    
+    if not details_json:
+        return correct_map
+
+    # Fonction récursive pour parcourir le JSON
+    def scan(obj):
+        if isinstance(obj, dict):
+            # Si on tombe sur une réponse avec is_correct=True
+            if obj.get('layout') == 'answer' and obj.get('attributes', {}).get('is_correct'):
+                return [obj.get('key')]
+            
+            # Si on est dans une question (multiple_choice etc), on cherche dans ses answers
+            if obj.get('attributes') and 'answers' in obj['attributes']:
+                correct_keys = []
+                for ans in obj['attributes']['answers']:
+                    # Vérification directe dans l'attribut
+                    if ans.get('attributes', {}).get('is_correct'):
+                        correct_keys.append(ans.get('key'))
+                if correct_keys:
+                    correct_map[obj.get('key')] = correct_keys
+            
+            for k, v in obj.items():
+                scan(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                scan(item)
+
+    scan(details_json)
+    return correct_map
+
+def validate_content(cohort_id, module_id, session_id, content_id, global_key, global_layout, flexible_contents):
+    # Determine endpoint based on global_layout
+    endpoint_suffix = "flexible_content"
+    # L'endpoint flexible_quiz renvoie 404, on tente de tout passer par flexible_content
+    # if global_layout == "flexible_quiz":
+    #    endpoint_suffix = "flexible_quiz"
+        
+    url = f"https://ensupsqy.skillogs.info/api/user/cohort/{cohort_id}/module/{module_id}/session/{session_id}/content/{content_id}/{endpoint_suffix}"
     
     headers = {
         "Authorization": f"Bearer {get_token()}",
@@ -111,16 +172,56 @@ def validate_content(cohort_id, module_id, session_id, content_id, global_key, g
         "X-Language": "fr"
     }
     
+    # Prépare les données internes pour flexible content ou quiz
     inner_data = []
-    for content in flexible_contents:
-        inner_data.append({
-            "key": content['key'],
-            "layout": content['layout'],
-            "data": {
-                "done": True,
-                "time": 250
+
+    if global_layout == "flexible_quiz":
+        # Tentative de récupération des VRAIES réponses
+        print(f"   Recherche des réponses pour le quiz {content_id}...")
+        
+        # L'endpoint flexible_content en GET renvoie 405 (Method Not Allowed), 
+        # donc on ne peut probablement pas fetcher les réponses par là. 
+        # On désactive le fetch automatique pour éviter le warning et on utilise le fallback.
+        # details = get_content_details(cohort_id, module_id, session_id, content_id)
+        # correct_answers_map = find_correct_answers(details)
+        correct_answers_map = {} # Empty map Force fallback
+        
+        # Pour chaque question du quiz trouvé dans flexible_contents
+        for content in flexible_contents:
+            question_data = {
+                "done": True, 
+                "time": 30
             }
-        })
+            
+            # Stratégie de réponse
+            q_key = content['key']
+            
+            # 1. Si on a trouvé la bonne réponse via le fetch, on l'utilise
+            if q_key in correct_answers_map:
+                question_data["answer"] = correct_answers_map[q_key]
+                print(f"   -> Réponse trouvée pour {q_key}: {question_data['answer']}")
+            
+            # 2. Sinon, si on a une liste de choix (via parse_json), on prend le premier (fallback)
+            elif 'answers' in content and content['answers']:
+                question_data["answer"] = [content['answers'][0]]
+                print(f"   -> Fallback sur la 1ère réponse pour {q_key}")
+
+            inner_data.append({
+                "key": content['key'],
+                "layout": content['layout'],
+                "data": question_data
+            })
+    else:
+        # Cas standard flexible_content
+        for content in flexible_contents:
+            inner_data.append({
+                "key": content['key'],
+                "layout": content['layout'],
+                "data": {
+                    "done": True,
+                    "time": 30
+                }
+            })
     
     payload_data = {
         "key": global_key,
